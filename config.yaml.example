@@ -1,0 +1,33 @@
+model: claude-sonnet-4-20250514
+max_tokens: 8096
+max_iterations: 20
+
+servers:
+  todoist:
+    description: "Manage Todoist tasks, projects, and labels"
+    transport: stdio
+    command: uv
+    args:
+      - run
+      - --directory
+      - ~/todoist-mcp-connector
+      - todoist-mcp
+    env:
+      TODOIST_API_TOKEN: ${TODOIST_API_TOKEN}
+
+  shortcut:
+    description: "Manage Shortcut stories, epics, iterations, and workflows"
+    transport: stdio
+    command: npx
+    args:
+      - -y
+      - "@shortcut/mcp@latest"
+    env:
+      SHORTCUT_API_TOKEN: ${SHORTCUT_API_TOKEN}
+
+  github:
+    description: "Interact with GitHub repositories, issues, pull requests, and code"
+    transport: http
+    url: https://api.githubcopilot.com/mcp/
+    headers:
+      Authorization: "Bearer ${GITHUB_TOKEN}"

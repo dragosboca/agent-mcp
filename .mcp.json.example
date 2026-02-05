@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "agent-mcp": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/Users/dragos/playground/agent-mcp",
+        "agent-mcp"
+      ],
+      "env": {
+        "TODOIST_API_TOKEN": "your-todoist-api-token",
+        "SHORTCUT_API_TOKEN": "your-shortcut-api-token",
+        "GITHUB_TOKEN": "your-github-token",
+        "ANTHROPIC_API_KEY": "your-anthropic-api-key"
+      }
+    }
+  }
+}
