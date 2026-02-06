@@ -9,7 +9,7 @@ description = "MCP facade server that exposes high-level tools backed by sub-age
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.26.0",
-    "anthropic>=0.40.0",
+    "google-adk[extensions]>=1.24.0",
     "pyyaml>=6.0",
 ]
 
@@ -18,3 +18,15 @@ agent-mcp = "agent_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests that hit real servers (require cached OAuth tokens)",
+]

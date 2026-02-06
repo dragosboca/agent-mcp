@@ -40,13 +40,18 @@ class ServerConfig:
     # http fields
     url: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    auth: str | None = None
+
+
+DEFAULT_TOKEN_DIR = str(Path.home() / ".agent-mcp" / "tokens")
 
 
 @dataclass
 class AppConfig:
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "anthropic/claude-sonnet-4-20250514"
     max_tokens: int = 8096
-    max_iterations: int = 20
+    max_llm_calls: int = 20
+    token_dir: str = DEFAULT_TOKEN_DIR
     servers: list[ServerConfig] = field(default_factory=list)
 
 
@@ -75,11 +80,15 @@ def load_config(path: str | None = None) -> AppConfig:
             env=srv.get("env", {}),
             url=srv.get("url"),
             headers=srv.get("headers", {}),
+            auth=srv.get("auth"),
         ))
 
+    max_llm_calls = raw.get("max_llm_calls") or raw.get("max_iterations", 20)
+
     return AppConfig(
-        model=raw.get("model", "claude-sonnet-4-20250514"),
+        model=raw.get("model", "anthropic/claude-sonnet-4-20250514"),
         max_tokens=raw.get("max_tokens", 8096),
-        max_iterations=raw.get("max_iterations", 20),
+        max_llm_calls=max_llm_calls,
+        token_dir=str(Path(raw.get("token_dir", DEFAULT_TOKEN_DIR)).expanduser()),
         servers=servers,
     )

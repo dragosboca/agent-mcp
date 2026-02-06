@@ -1,10 +1,20 @@
-model: claude-sonnet-4-20250514
+model: anthropic/claude-sonnet-4-20250514
 max_tokens: 8096
-max_iterations: 20
+max_llm_calls: 20
+# Directory for cached OAuth tokens (default: ~/.agent-mcp/tokens)
+token_dir: ~/.agent-mcp/tokens
 
 servers:
+  # OAuth-authenticated HTTP server (opens browser for consent)
   todoist:
     description: "Manage Todoist tasks, projects, and labels"
+    transport: http
+    url: https://ai.todoist.net/mcp
+    auth: oauth
+
+  # Stdio server with API token
+  todoist-stdio:
+    description: "Manage Todoist tasks, projects, and labels (stdio)"
     transport: stdio
     command: uv
     args:
