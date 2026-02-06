@@ -1,123 +1,132 @@
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any
+from pathlib import Path
 
-import anthropic
+from google.adk.agents import LlmAgent
+from google.adk.agents.run_config import RunConfig
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import (
+    StdioConnectionParams,
+    StreamableHTTPConnectionParams,
+)
+from google.genai import types
+from mcp import StdioServerParameters
 
 from agent_mcp.config import AppConfig, ServerConfig
-from agent_mcp.mcp_client import ConnectionManager
 
 logger = logging.getLogger(__name__)
 
 
-def _mcp_tools_to_anthropic(tools: list[Any]) -> list[dict[str, Any]]:
-    """Convert MCP tool definitions to Anthropic API format."""
-    result = []
-    for tool in tools:
-        result.append({
-            "name": tool.name,
-            "description": tool.description or "",
-            "input_schema": tool.inputSchema,
-        })
-    return result
+async def _resolve_http_headers(
+    server_config: ServerConfig,
+    app_config: AppConfig,
+) -> dict[str, str]:
+    """Build HTTP headers for a streamable-HTTP MCP connection.
+
+    If auth == "oauth", fetch a token via ensure_oauth_token (reuses oauth.py).
+    Otherwise return the static headers from config.
+    """
+    if server_config.auth == "oauth":
+        from agent_mcp.oauth import ensure_oauth_token
+
+        token_dir = Path(app_config.token_dir)
+        assert server_config.url is not None
+        token = await ensure_oauth_token(
+            server_config.name, server_config.url, token_dir
+        )
+        return {"Authorization": f"Bearer {token}"}
+    return dict(server_config.headers)
 
 
-def _tool_result_to_text(result: Any) -> str:
-    """Extract text from a CallToolResult."""
-    parts = []
-    for block in result.content:
-        if hasattr(block, "text"):
-            parts.append(block.text)
-        else:
-            parts.append(str(block))
-    if result.isError:
-        return f"[Tool Error] {' '.join(parts)}"
-    return "\n".join(parts)
+async def _build_toolset(
+    server_config: ServerConfig,
+    app_config: AppConfig,
+) -> McpToolset:
+    """Create an McpToolset for the given server config."""
+    if server_config.transport == "stdio":
+        assert server_config.command is not None
+        return McpToolset(
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command=server_config.command,
+                    args=server_config.args,
+                    env=server_config.env or None,
+                ),
+            ),
+        )
+    elif server_config.transport == "http":
+        assert server_config.url is not None
+        headers = await _resolve_http_headers(server_config, app_config)
+        return McpToolset(
+            connection_params=StreamableHTTPConnectionParams(
+                url=server_config.url,
+                headers=headers,
+            ),
+        )
+    else:
+        raise ValueError(f"Unknown transport: {server_config.transport}")
 
 
 async def run_agent(
     server_config: ServerConfig,
     app_config: AppConfig,
-    connection_manager: ConnectionManager,
     instruction: str,
 ) -> str:
-    """Run a sub-agent loop against a downstream MCP server."""
+    """Run a sub-agent loop against a downstream MCP server using Google ADK."""
+    toolset = await _build_toolset(server_config, app_config)
+
     try:
-        # Get tools from the downstream server
-        tools = await connection_manager.list_tools(server_config)
-        anthropic_tools = _mcp_tools_to_anthropic(tools)
-        logger.info(
-            f"[{server_config.name}] Loaded {len(anthropic_tools)} tools, "
-            f"running instruction: {instruction[:100]}..."
+        agent = LlmAgent(
+            model=LiteLlm(model=app_config.model),
+            name=server_config.name,
+            instruction="You are a helpful assistant. Use the available tools to fulfill the user's request.",
+            tools=[toolset],
         )
 
-        client = anthropic.Anthropic()
-        messages: list[dict[str, Any]] = [
-            {"role": "user", "content": instruction},
-        ]
+        session_service = InMemorySessionService()
+        runner = Runner(
+            agent=agent,
+            app_name="agent-mcp",
+            session_service=session_service,
+        )
 
-        for iteration in range(app_config.max_iterations):
-            logger.debug(f"[{server_config.name}] Iteration {iteration + 1}")
+        session = await session_service.create_session(
+            app_name="agent-mcp",
+            user_id="agent-mcp",
+        )
 
-            response = client.messages.create(
-                model=app_config.model,
-                max_tokens=app_config.max_tokens,
-                tools=anthropic_tools,
-                messages=messages,
-            )
+        content = types.Content(
+            role="user",
+            parts=[types.Part(text=instruction)],
+        )
 
-            # Append assistant response
-            messages.append({"role": "assistant", "content": response.content})
+        logger.info(
+            f"[{server_config.name}] Running instruction: {instruction[:100]}..."
+        )
 
-            if response.stop_reason == "tool_use":
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        logger.info(
-                            f"[{server_config.name}] Calling tool: {block.name}"
-                        )
-                        logger.debug(
-                            f"[{server_config.name}] Tool input: "
-                            f"{json.dumps(block.input, default=str)[:500]}"
-                        )
-                        try:
-                            result = await connection_manager.call_tool(
-                                server_config, block.name, block.input
-                            )
-                            text = _tool_result_to_text(result)
-                        except Exception as e:
-                            logger.error(
-                                f"[{server_config.name}] Tool call failed: {e}"
-                            )
-                            text = f"[Error calling tool {block.name}]: {e}"
+        final_text = ""
+        async for event in runner.run_async(
+            user_id="agent-mcp",
+            session_id=session.id,
+            new_message=content,
+            run_config=RunConfig(max_llm_calls=app_config.max_llm_calls),
+        ):
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    final_text = "\n".join(
+                        part.text for part in event.content.parts if part.text
+                    )
+                break
 
-                        logger.debug(
-                            f"[{server_config.name}] Tool result: {text[:500]}"
-                        )
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": text,
-                        })
-
-                messages.append({"role": "user", "content": tool_results})
-            else:
-                # end_turn or max_tokens — extract final text
-                text_parts = []
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        text_parts.append(block.text)
-                final = "\n".join(text_parts)
-                logger.info(
-                    f"[{server_config.name}] Agent completed after "
-                    f"{iteration + 1} iteration(s)"
-                )
-                return final
-
-        return f"[{server_config.name}] Agent reached max iterations ({app_config.max_iterations})"
+        logger.info(f"[{server_config.name}] Agent completed")
+        return final_text
 
     except Exception as e:
         logger.exception(f"[{server_config.name}] Agent error")
         return f"[{server_config.name}] Error: {e}"
+    finally:
+        await toolset.close()
