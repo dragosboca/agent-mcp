@@ -1,6 +1,6 @@
 # agent-mcp
 
-An MCP (Model Context Protocol) facade server that exposes high-level tools backed by autonomous agent loops. This project acts as a bridge between client applications and multiple downstream MCP servers, using Claude to intelligently delegate tasks as natural-language instructions.
+An MCP (Model Context Protocol) facade server that exposes high-level tools backed by autonomous agent loops. This project acts as a bridge between client applications and multiple downstream MCP servers, using an LLM to intelligently delegate tasks as natural-language instructions.
 
 ## Overview
 
@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) facade server that exposes high-level tools back
 
 1. **Aggregates multiple MCP servers** - Connects to any number of downstream MCP servers
 2. **Exposes unified tools** - Each downstream server becomes a single high-level tool
-3. **Powers tools with agents** - When a tool is invoked, an autonomous Claude agent runs to fulfill the instruction using the downstream server's capabilities
+3. **Powers tools with agents** - When a tool is invoked, an autonomous agent (powered by [Google ADK](https://github.com/google/adk-python)) runs to fulfill the instruction using the downstream server's capabilities
 4. **Handles complexity internally** - Clients stay simple; agents handle tool selection, error recovery, and multi-step operations
 
 ## Use Case
@@ -38,9 +38,9 @@ And the agent handles the complexity of looking up projects, calling the right t
 ┌─────────────────────┐
 │  agent-mcp Server   │
 ├─────────────────────┤
-│  Tool 1: server-a   ├──→ Agent Loop ─→ Anthropic Claude
-│  Tool 2: server-b   ├──→ Agent Loop ─→ Anthropic Claude
-│  Tool 3: server-c   ├──→ Agent Loop ─→ Anthropic Claude
+│  Tool 1: server-a   ├──→ ADK Agent ─→ LLM (via LiteLLM)
+│  Tool 2: server-b   ├──→ ADK Agent ─→ LLM (via LiteLLM)
+│  Tool 3: server-c   ├──→ ADK Agent ─→ LLM (via LiteLLM)
 │  ...                │
 └─────────┬───────────┘
           │
@@ -58,9 +58,8 @@ And the agent handles the complexity of looking up projects, calling the right t
 
 - Python 3.10+
 - [uv](https://github.com/astral-sh/uv) (optional, but recommended)
-- API keys for services you want to use:
-  - Anthropic API key (required)
-  - API tokens for any downstream MCP servers you configure (optional)
+- API keys for the LLM provider you want to use (e.g. `ANTHROPIC_API_KEY`)
+- API tokens for any downstream MCP servers you configure (optional)
 
 ### Setup
 
@@ -90,9 +89,9 @@ nano .mcp.json
 
 4. Configure downstream MCP servers in `config.yaml`:
 ```yaml
-model: claude-sonnet-4-20250514
+model: anthropic/claude-sonnet-4-20250514
 max_tokens: 8096
-max_iterations: 20
+max_llm_calls: 20
 
 servers:
   my-server:
@@ -107,6 +106,8 @@ servers:
     env:
       MY_API_TOKEN: ${MY_API_TOKEN}
 ```
+
+The `model` field uses [LiteLLM format](https://docs.litellm.ai/docs/providers) (`provider/model-name`), so you can use any supported LLM provider.
 
 ## Configuration
 
@@ -135,11 +136,12 @@ The `.mcp.json` file configures how Claude Code (or other MCP clients) launches 
 
 The `config.yaml` file defines:
 
-- **Agent settings** - Model, max tokens, iteration limits
+- **Agent settings** - Model (LiteLLM format), max tokens, LLM call limits
 - **Downstream servers** - MCP servers to aggregate
   - Transport type (stdio, http)
-  - How to launch them (command + args)
+  - How to launch them (command + args for stdio, url for http)
   - Environment variables (supports `${VAR}` substitution)
+  - Authentication (static headers or OAuth browser flow)
 
 ## Usage
 
@@ -170,15 +172,15 @@ The server listens on stdin/stdout for MCP protocol messages.
 
 ## How It Works
 
-1. **Initialization** - `agent-mcp` loads `config.yaml` and connects to all downstream MCP servers
+1. **Initialization** - `agent-mcp` loads `config.yaml` and registers tools for each downstream server
 2. **Tool Registration** - Each downstream server becomes a tool with its configured name
 3. **Request Handling** - When a tool is invoked with a natural-language instruction:
-   - `agent-mcp` spawns an autonomous Claude agent
-   - The agent loads all tools from the downstream server
-   - Claude reads the instruction and decides which tools to call
+   - `agent-mcp` creates an ADK `McpToolset` connected to the downstream server
+   - An ADK `LlmAgent` runs with the downstream server's tools
+   - The agent reads the instruction and decides which tools to call
    - The agent handles tool calls, errors, and retries
-   - Results are returned to the client
-4. **Cleanup** - MCP connections are cleaned up on shutdown
+   - Results are returned to the client, and the toolset is closed
+4. **Per-invocation lifecycle** - Each tool call gets a fresh MCP connection, avoiding stale connection state
 
 ## Project Structure
 
@@ -190,20 +192,26 @@ agent-mcp/
 ├── config.yaml             # Downstream server configuration
 ├── pyproject.toml          # Python project metadata
 ├── uv.lock                 # Locked dependencies
-└── src/
-    └── agent_mcp/
-        ├── __init__.py
-        ├── server.py       # MCP server entrypoint
-        ├── agent.py        # Agent loop logic
-        ├── mcp_client.py   # Downstream MCP client management
-        └── config.py       # Configuration loading and parsing
+├── src/
+│   └── agent_mcp/
+│       ├── __init__.py
+│       ├── server.py       # MCP server entrypoint
+│       ├── agent.py        # ADK agent orchestration
+│       ├── oauth.py        # OAuth browser-based authentication
+│       └── config.py       # Configuration loading and parsing
+└── tests/
+    ├── test_agent.py       # Agent unit tests
+    ├── test_config.py      # Config parsing tests
+    ├── test_oauth.py       # OAuth flow tests
+    ├── test_server.py      # Server CLI tests
+    └── test_e2e_oauth.py   # End-to-end OAuth tests (require cached tokens)
 ```
 
 ### Module Overview
 
 - **server.py** - FastMCP server implementation, handles MCP protocol
-- **agent.py** - Core agent loop that runs Claude with tools from downstream servers
-- **mcp_client.py** - Manages connections to downstream MCP servers (stdio, http)
+- **agent.py** - ADK-based agent orchestration using `LlmAgent`, `Runner`, and `McpToolset`
+- **oauth.py** - OAuth browser-based authentication for downstream MCP servers
 - **config.py** - YAML parsing, environment variable substitution, validation
 
 ## Development
@@ -211,14 +219,15 @@ agent-mcp/
 ### Running Tests
 
 ```bash
-uv run python -m pytest tests/
+uv run pytest -m "not e2e"
 ```
 
-### Running Linting/Type Checking
+### Running End-to-End Tests
+
+E2E tests require cached OAuth tokens (run the OAuth flow manually first):
 
 ```bash
-uv run ruff check src/
-uv run mypy src/
+uv run pytest -m e2e
 ```
 
 ### Code Style
@@ -230,8 +239,7 @@ uv run mypy src/
 
 ## Limitations & Future Work
 
-- Only supports stdio and http transports (websocket coming soon)
-- Single-threaded agent loop (can be queued if needed)
+- Only supports stdio and http transports
 - No caching of tool schemas (reloaded on every call)
 - Error messages are agent-generated (could be inconsistent)
 
@@ -239,7 +247,6 @@ uv run mypy src/
 
 Contributions welcome! Areas of interest:
 
-- Support for websocket transport
 - Tool schema caching for performance
 - Better error recovery strategies
 - Additional test coverage
@@ -251,6 +258,7 @@ MIT
 ## Acknowledgments
 
 Built with:
-- [anthropic-sdk-python](https://github.com/anthropics/anthropic-sdk-python)
+- [Google ADK](https://github.com/google/adk-python) - Agent Development Kit
+- [LiteLLM](https://github.com/BerriAI/litellm) - Multi-provider LLM gateway
 - [mcp-python](https://github.com/modelcontextprotocol/python-sdk)
 - [FastMCP](https://github.com/modelcontextprotocol/python-sdk/tree/main/src/mcp/server/fastmcp)
