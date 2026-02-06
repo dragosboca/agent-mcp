@@ -10,10 +10,12 @@ import yaml
 
 def _resolve_env_vars(value: str) -> str:
     """Replace ${VAR_NAME} with the value from os.environ."""
+
     def _replace(match: re.Match) -> str:
         var = match.group(1)
         resolved = os.environ.get(var, "")
         return resolved
+
     return re.sub(r"\$\{([^}]+)\}", _replace, value)
 
 
@@ -68,20 +70,24 @@ def load_config(path: str | None = None) -> AppConfig:
         raw = yaml.safe_load(f)
 
     raw = _resolve_recursive(raw)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Expected config to be a dict, got {type(raw).__name__}")
 
     servers = []
     for name, srv in raw.get("servers", {}).items():
-        servers.append(ServerConfig(
-            name=name,
-            description=srv.get("description", ""),
-            transport=srv.get("transport", "stdio"),
-            command=srv.get("command"),
-            args=srv.get("args", []),
-            env=srv.get("env", {}),
-            url=srv.get("url"),
-            headers=srv.get("headers", {}),
-            auth=srv.get("auth"),
-        ))
+        servers.append(
+            ServerConfig(
+                name=name,
+                description=srv.get("description", ""),
+                transport=srv.get("transport", "stdio"),
+                command=srv.get("command"),
+                args=srv.get("args", []),
+                env=srv.get("env", {}),
+                url=srv.get("url"),
+                headers=srv.get("headers", {}),
+                auth=srv.get("auth"),
+            )
+        )
 
     max_llm_calls = raw.get("max_llm_calls") or raw.get("max_iterations", 20)
 

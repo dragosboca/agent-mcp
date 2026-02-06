@@ -18,6 +18,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+from pydantic import AnyUrl
+
 from mcp.client.auth import OAuthClientProvider
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
@@ -206,7 +208,7 @@ async def ensure_oauth_token(server_name: str, server_url: str, token_dir: Path)
 
     try:
         client_metadata = OAuthClientMetadata(
-            redirect_uris=[callback_server.redirect_uri],
+            redirect_uris=[AnyUrl(callback_server.redirect_uri)],
             client_name=f"agent-mcp ({server_name})",
             token_endpoint_auth_method="none",
             grant_types=["authorization_code", "refresh_token"],

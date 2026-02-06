@@ -16,7 +16,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import (
 from google.genai import types
 from mcp import StdioServerParameters
 
-from agent_mcp.config import AppConfig, ServerConfig
+from .oauth import ensure_oauth_token
+from .config import AppConfig, ServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,10 @@ async def _resolve_http_headers(
     Otherwise return the static headers from config.
     """
     if server_config.auth == "oauth":
-        from agent_mcp.oauth import ensure_oauth_token
 
         token_dir = Path(app_config.token_dir)
         assert server_config.url is not None
-        token = await ensure_oauth_token(
-            server_config.name, server_config.url, token_dir
-        )
+        token = await ensure_oauth_token(server_config.name, server_config.url, token_dir)
         return {"Authorization": f"Bearer {token}"}
     return dict(server_config.headers)
 
@@ -104,9 +102,7 @@ async def run_agent(
             parts=[types.Part(text=instruction)],
         )
 
-        logger.info(
-            f"[{server_config.name}] Running instruction: {instruction[:100]}..."
-        )
+        logger.info(f"[{server_config.name}] Running instruction: {instruction[:100]}...")
 
         final_text = ""
         async for event in runner.run_async(
@@ -117,9 +113,7 @@ async def run_agent(
         ):
             if event.is_final_response():
                 if event.content and event.content.parts:
-                    final_text = "\n".join(
-                        part.text for part in event.content.parts if part.text
-                    )
+                    final_text = "\n".join(part.text for part in event.content.parts if part.text)
                 break
 
         logger.info(f"[{server_config.name}] Agent completed")
